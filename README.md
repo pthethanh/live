@@ -1,7 +1,7 @@
 # live
 live reload for micro
 
-Use: `live watch.yml`
+Use: `live`
 
 `watch.yml`
 ```
