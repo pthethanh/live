@@ -23,6 +23,7 @@ type (
 		Watchers []*Watcher `yaml:"watchers"`
 	}
 	Watcher struct {
+		Name     string    `yaml:"name"`
 		Enable   bool      `yaml:"enable"`
 		Targets  []string  `yaml:"targets"`
 		Commands []Command `yaml:"commands"`
@@ -57,11 +58,6 @@ func ReadConfig(p string) *Config {
 }
 
 func Watch(config *Config) error {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		log.Printf("ERROR: start file watcher, err: %v\n", err)
-		return err
-	}
 	log.Println("running startup commands...")
 	go func() {
 		for _, cmd := range config.Commands {
@@ -72,8 +68,12 @@ func Watch(config *Config) error {
 		if !conf.Enable {
 			continue
 		}
-		conf := conf
-		go func() {
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			log.Printf("ERROR: start watcher %s, err: %v\n", conf.Name, err)
+			return err
+		}
+		go func(conf Watcher) {
 			for {
 				select {
 				case event, ok := <-watcher.Events:
@@ -81,7 +81,7 @@ func Watch(config *Config) error {
 						return
 					}
 					if event.Op&fsnotify.Write == fsnotify.Write {
-						log.Printf("INFO: %s changed\n", event.Name)
+						log.Printf("INFO: watcher %s, %s changed\n", conf.Name, event.Name)
 						for _, cmd := range conf.Commands {
 							cmd.Run()
 						}
@@ -90,15 +90,15 @@ func Watch(config *Config) error {
 					if !ok {
 						return
 					}
-					log.Println("ERROR: ", err)
+					log.Printf("ERROR: watcher %s, err: %v\n", conf.Name, err)
 				}
 			}
-		}()
+		}(*conf)
 		for _, p := range conf.Targets {
 			if err = watcher.Add(p); err != nil {
-				log.Printf("ERROR: ailed to watch %q, err: %v\n", p, err)
+				log.Printf("ERROR: watcher %s, watch %q, err: %v\n", conf.Name, p, err)
 			}
-			log.Printf("INFO: watching: %s\n", p)
+			log.Printf("INFO: watcher %s, watching: %s\n", conf.Name, p)
 		}
 	}
 	return nil
