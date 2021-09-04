@@ -1,6 +1,8 @@
 # live
 live reload for micro
 
+*Note*: this project is just an experiment.
+
 Use: `live watch.yml`
 
 `watch.yml`

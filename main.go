@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"gopkg.in/fsnotify.v1"
@@ -29,10 +30,11 @@ type (
 		Commands []Command `yaml:"commands"`
 	}
 	Command struct {
-		Timeout time.Duration `yaml:"timeout"`
-		Dir     string        `yaml:"dir"`
-		Command string        `yaml:"command"`
-		Args    []string      `yaml:"args"`
+		Concurrent bool          `yaml:"concurrent"`
+		Timeout    time.Duration `yaml:"timeout"`
+		Dir        string        `yaml:"dir"`
+		Command    string        `yaml:"command"`
+		Args       []string      `yaml:"args"`
 	}
 )
 
@@ -60,47 +62,59 @@ func ReadConfig(p string) *Config {
 func Watch(config *Config) error {
 	log.Println("running startup commands...")
 	go func() {
-		for _, cmd := range config.Commands {
-			cmd.Run()
+		for _, conf := range config.Watchers {
+			if !conf.Enable {
+				continue
+			}
+			watcher, err := fsnotify.NewWatcher()
+			if err != nil {
+				log.Printf("ERROR: start watcher %s, err: %v\n", conf.Name, err)
+				log.Panic(err)
+			}
+			go func(conf Watcher) {
+				for {
+					select {
+					case event, ok := <-watcher.Events:
+						if !ok {
+							return
+						}
+						if event.Op&fsnotify.Write == fsnotify.Write {
+							log.Printf("INFO: watcher %s, %s changed\n", conf.Name, event.Name)
+							go func() {
+								for _, cmd := range conf.Commands {
+									cmd.Run()
+								}
+							}()
+						}
+					case err, ok := <-watcher.Errors:
+						if !ok {
+							return
+						}
+						log.Printf("ERROR: watcher %s, err: %v\n", conf.Name, err)
+					}
+				}
+			}(*conf)
+			for _, p := range conf.Targets {
+				if err = watcher.Add(p); err != nil {
+					log.Printf("ERROR: watcher %s, watch %q, err: %v\n", conf.Name, p, err)
+				}
+				log.Printf("INFO: watcher %s, watching: %s\n", conf.Name, p)
+			}
 		}
 	}()
-	for _, conf := range config.Watchers {
-		if !conf.Enable {
-			continue
-		}
-		watcher, err := fsnotify.NewWatcher()
-		if err != nil {
-			log.Printf("ERROR: start watcher %s, err: %v\n", conf.Name, err)
-			return err
-		}
-		go func(conf Watcher) {
-			for {
-				select {
-				case event, ok := <-watcher.Events:
-					if !ok {
-						return
-					}
-					if event.Op&fsnotify.Write == fsnotify.Write {
-						log.Printf("INFO: watcher %s, %s changed\n", conf.Name, event.Name)
-						for _, cmd := range conf.Commands {
-							cmd.Run()
-						}
-					}
-				case err, ok := <-watcher.Errors:
-					if !ok {
-						return
-					}
-					log.Printf("ERROR: watcher %s, err: %v\n", conf.Name, err)
-				}
+	go func() {
+		for _, cmd := range config.Commands {
+			cmd := cmd
+			if cmd.Concurrent {
+				go cmd.Run()
+			} else {
+				cmd.Run()
 			}
-		}(*conf)
-		for _, p := range conf.Targets {
-			if err = watcher.Add(p); err != nil {
-				log.Printf("ERROR: watcher %s, watch %q, err: %v\n", conf.Name, p, err)
-			}
-			log.Printf("INFO: watcher %s, watching: %s\n", conf.Name, p)
 		}
-	}
+	}()
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	<-sigChan
 	return nil
 }
 
